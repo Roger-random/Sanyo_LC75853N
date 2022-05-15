@@ -73,27 +73,60 @@ void msgOutReset()
 // Print control message to serial terminal
 void msgOutPrint()
 {
+  Serial.println("{");
   for(int m = 0; m < MSG_OUT_COUNT; m++)
   {
-    Serial.print(m);
+    Serial.print("  { ");
     for (int i = 0; i < MSG_OUT_BYTES; i++)
     {
-      Serial.print(" ");
-      Serial.print(msgOut[m][i],BIN);
+      if(msgOut[m][i]<0x10)
+      {
+        Serial.print("0x0");
+      }
+      else
+      {
+        Serial.print("0x");
+      }
+      Serial.print(msgOut[m][i],HEX);
+      if (i < MSG_OUT_BYTES-1)
+      {
+        Serial.print(", ");
+      }
     }
-    Serial.println();
+    if (m < MSG_OUT_COUNT-1)
+    {
+      Serial.println("},");
+    }
+    else
+    {
+      Serial.println("}");
+    }
   }
+  Serial.println("};");
 }
 
 // Print keyscan data to serial terminal
 void msgInPrint()
 {
+  Serial.print("{ ");
   for (int i = 0; i < MSG_IN_BYTES; i++)
   {
-    Serial.print(msgIn[i],BIN);
-    Serial.print(' ');
+    if(msgIn[i]<0x10)
+    {
+      Serial.print("0x0");
+    }
+    else
+    {
+      Serial.print("0x");
+    }
+    Serial.print(msgIn[i],HEX);
+
+    if (i < MSG_IN_BYTES-1)
+    {
+      Serial.print(", ");
+    }
   }
-  Serial.println();
+  Serial.println("};");
 }
 
 // Turn the selected segment on (turnOn=true) or off (turnOn=false)
