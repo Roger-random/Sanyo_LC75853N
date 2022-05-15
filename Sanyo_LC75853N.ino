@@ -6,6 +6,7 @@
 
 #define MSG_OUT_COUNT 3
 #define MSG_OUT_BYTES 7
+#define SEG_PER_MSG 42
 
 // For best performance Encoder prefers interrupt pins.
 // https://www.pjrc.com/teensy/td_libs_Encoder.html
@@ -48,6 +49,67 @@ uint8_t msgOut[MSG_OUT_COUNT][MSG_OUT_BYTES] = {
   {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x03, 0x40}
 };
 */
+
+// Change the control message to all segments OFF.
+void msgOutReset()
+{
+  for(int m = 0; m < MSG_OUT_COUNT; m++)
+  {
+    for (int i = 0; i < MSG_OUT_BYTES; i++)
+    {
+      msgOut[m][i] = 0x00;
+    }
+  }
+  msgOut[1][6] = 0x80;
+  msgOut[2][6] = 0x40;
+}
+
+// Print control message to serial terminal
+void msgOutPrint()
+{
+  for(int m = 0; m < MSG_OUT_COUNT; m++)
+  {
+    Serial.print(m);
+    for (int i = 0; i < MSG_OUT_BYTES; i++)
+    {
+      Serial.print(" ");
+      Serial.print(msgOut[m][i],BIN);
+    }
+    Serial.println();
+  }
+}
+
+// Turn the selected segment on (turnOn=true) or off (turnOn=false)
+// Note segment is zero-based counting and datasheet diagram starts at 1.
+void msgOutSegment(uint8_t segment, bool turnOn)
+{
+  uint8_t message = 0;
+  uint8_t index = 0;
+  uint8_t segmentBit = 0;
+  uint8_t bitPattern = 0;
+
+  if (segment > 126)
+  {
+    Serial.print("msgOutSegment out of range ");
+    Serial.println(segment);
+    return;
+  }
+  message = segment/SEG_PER_MSG;
+  segmentBit = segment%SEG_PER_MSG;
+  index = segmentBit/8;
+  bitPattern = 0x01 << (segmentBit%8);
+
+  if(turnOn)
+  {
+    Serial.print("Turning on D");
+    Serial.println(segment+1); // LC75853N datasheet uses 1-based counting for display bits
+    msgOut[message][index] |= bitPattern;
+  }
+  else
+  {
+    msgOut[message][index] &= ~bitPattern;
+  }
+}
 
 // Couldn't use Arduino SPI library because it controls enable pin with SPI semantics,
 // which is different from CCB.
@@ -94,6 +156,8 @@ void setup() {
   Serial.println("Toyota 86120-08010 Faceplate Test");
 
   audioModePosition = audioModeEncoder.read();
+
+  msgOutReset();
 }
 
 void loop() {
@@ -104,7 +168,12 @@ void loop() {
     Serial.print("Audio Mode knob at ");
     Serial.print(newPos);
     Serial.println();
+
+    msgOutSegment(audioModePosition/2,false);
+    msgOutSegment(newPos/2,true);
+
     audioModePosition = newPos;
+    msgOutPrint();
   }
 
   for(int m = 0; m < MSG_OUT_COUNT; m++)
