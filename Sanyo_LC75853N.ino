@@ -8,6 +8,8 @@
 #define MSG_OUT_BYTES 7
 #define SEG_PER_MSG 42
 
+#define MSG_IN_BYTES 4
+
 // For best performance Encoder prefers interrupt pins.
 // https://www.pjrc.com/teensy/td_libs_Encoder.html
 // On an Arduino Nano that means pins 2 and 3. Adjust as needed for other hardware.
@@ -34,16 +36,20 @@ void hold()
 Encoder audioModeEncoder(pinEncoderA, pinEncoderB);
 long audioModePosition;
 
+uint8_t msgIn[MSG_IN_BYTES];
+uint8_t msgOut[MSG_OUT_COUNT][MSG_OUT_BYTES];
+/*
 // Control signals for "FM 1 CH 1 87.9"
-uint8_t msgOut[MSG_OUT_COUNT][MSG_OUT_BYTES] = {
+{
   {0x00, 0x00, 0x00, 0xD0, 0xDD, 0x02, 0x00},
   {0x70, 0x55, 0x00, 0x00, 0x00, 0x00, 0x80},
   {0x06, 0x04, 0x0B, 0x00, 0x00, 0x00, 0x40}  
 };
+*/
 
-// Control signal to activate all 126 segments
 /*
-uint8_t msgOut[MSG_OUT_COUNT][MSG_OUT_BYTES] = {
+// Control signal to activate all 126 segments
+{
   {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x03, 0x00},
   {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x03, 0x80},
   {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x03, 0x40}
@@ -77,6 +83,17 @@ void msgOutPrint()
     }
     Serial.println();
   }
+}
+
+// Print keyscan data to serial terminal
+void msgInPrint()
+{
+  for (int i = 0; i < MSG_IN_BYTES; i++)
+  {
+    Serial.print(msgIn[i],BIN);
+    Serial.print(' ');
+  }
+  Serial.println();
 }
 
 // Turn the selected segment on (turnOn=true) or off (turnOn=false)
@@ -137,6 +154,38 @@ void writeByte(uint8_t dataByte)
   return;
 }
 
+// Couldn't use Arduino SPI library because it controls enable pin with SPI semantics,
+// which is different from CCB.
+// Couldn't use Arduino shiftOut() because it uses clock signal differently from CCB.
+uint8_t readByte()
+{
+  uint8_t returnValue = 0;
+
+  // Read 8 bits, least significant bit first.
+  for(uint8_t i = 0; i < 8; i++)
+  {
+    digitalWrite(pinClock, LOW);
+    hold();
+    if (HIGH == digitalRead(pinDataIn))
+    {
+      returnValue |= 0x80;
+    }
+    else
+    {
+      returnValue &= 0x7F;
+    }
+    digitalWrite(pinClock, HIGH);
+    hold();
+
+    if (i < 7)
+    {
+      returnValue = returnValue >> 1;
+    }
+  }
+
+  return returnValue;
+}
+
 void setup() {
   pinMode(pinDataOut, OUTPUT);
   pinMode(pinDataIn, INPUT);
@@ -176,20 +225,37 @@ void loop() {
     msgOutPrint();
   }
 
-  for(int m = 0; m < MSG_OUT_COUNT; m++)
+  if (HIGH == digitalRead(pinDataIn))
+  {
+    for(int m = 0; m < MSG_OUT_COUNT; m++)
+    {
+      hold();
+      digitalWrite(pinEnable, LOW);
+      writeByte(0x42); // Sanyo LC75853N CCB address to control LCD segments
+      digitalWrite(pinEnable, HIGH);
+      for (int i = 0; i < MSG_OUT_BYTES; i++)
+      {
+        writeByte(msgOut[m][i]);
+      }
+      digitalWrite(pinEnable, LOW);
+      hold();
+    }
+  }
+  else
   {
     hold();
     digitalWrite(pinEnable, LOW);
-    writeByte(0x42); // address
+    writeByte(0x43); // Sanyo LC75853N CCB address to report keyscan data
     digitalWrite(pinEnable, HIGH);
-    for (int i = 0; i < MSG_OUT_BYTES; i++)
+    for (int i = 0; i < MSG_IN_BYTES; i++)
     {
-      writeByte(msgOut[m][i]);
+      msgIn[i] = readByte();
     }
     digitalWrite(pinEnable, LOW);
     hold();
+
+    msgInPrint();
   }
 
-  
   delay(50);
 }
