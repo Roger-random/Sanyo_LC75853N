@@ -131,7 +131,7 @@ void msgInPrint()
 
 // Turn the selected segment on (turnOn=true) or off (turnOn=false)
 // Note segment is zero-based counting and datasheet diagram starts at 1.
-void msgOutSegment(uint8_t segment, bool turnOn)
+void setSegment(uint8_t segment, bool turnOn)
 {
   uint8_t message = 0;
   uint8_t index = 0;
@@ -140,7 +140,7 @@ void msgOutSegment(uint8_t segment, bool turnOn)
 
   if (segment > 126)
   {
-    Serial.print("msgOutSegment out of range ");
+    Serial.print("Segment out of range ");
     Serial.println(segment);
     return;
   }
@@ -151,14 +151,33 @@ void msgOutSegment(uint8_t segment, bool turnOn)
 
   if(turnOn)
   {
-    Serial.print("Turning on D");
-    Serial.println(segment+1); // LC75853N datasheet uses 1-based counting for display bits
     msgOut[message][index] |= bitPattern;
   }
   else
   {
     msgOut[message][index] &= ~bitPattern;
   }
+}
+
+bool getSegment(uint8_t segment)
+{
+  uint8_t message = 0;
+  uint8_t index = 0;
+  uint8_t segmentBit = 0;
+  uint8_t bitPattern = 0;
+
+  if (segment > 126)
+  {
+    Serial.print("Segment out of range ");
+    Serial.println(segment);
+    return;
+  }
+  message = segment/SEG_PER_MSG;
+  segmentBit = segment%SEG_PER_MSG;
+  index = segmentBit/8;
+  bitPattern = 0x01 << (segmentBit%8);
+
+  return 0x00 != (msgOut[message][index] & bitPattern);
 }
 
 // Couldn't use Arduino SPI library because it controls enable pin with SPI semantics,
@@ -219,6 +238,14 @@ uint8_t readByte()
   return returnValue;
 }
 
+
+// Etch-a-sketch mode
+long cursorPosition;
+bool cursorState;
+bool cursorSegmentState;
+unsigned long cursorNextToggle;
+bool audioModePress;
+
 void setup() {
   pinMode(pinDataOut, OUTPUT);
   pinMode(pinDataIn, INPUT);
@@ -240,6 +267,23 @@ void setup() {
   audioModePosition = audioModeEncoder.read();
 
   msgOutReset();
+
+  cursorNextToggle = millis();
+  cursorState = true;
+  audioModePress = false;
+}
+
+void cursorSegmentUpdate()
+{
+  setSegment(cursorPosition, cursorState);
+  if (cursorState == cursorSegmentState)
+  {
+    cursorNextToggle = millis() + 500;
+  }
+  else
+  {
+    cursorNextToggle = millis() + 200;
+  }
 }
 
 void loop() {
@@ -247,19 +291,33 @@ void loop() {
   long newPos = audioModeEncoder.read();
   if (newPos != audioModePosition)
   {
-    Serial.print("Audio Mode knob at ");
-    Serial.print(newPos);
-    Serial.println();
+    setSegment(cursorPosition,cursorSegmentState);
+    cursorPosition = newPos/2;
+    cursorSegmentState = getSegment(cursorPosition);
 
-    msgOutSegment(audioModePosition/2,false);
-    msgOutSegment(newPos/2,true);
-
+    cursorState = true;
+    cursorSegmentUpdate();
+    
     audioModePosition = newPos;
-    msgOutPrint();
+  }
+  else if (cursorNextToggle < millis())
+  {
+    cursorState = !cursorState;
+    cursorSegmentUpdate();
   }
 
   if (HIGH == digitalRead(pinDataIn))
   {
+    if (audioModePress)
+    {
+      cursorSegmentState = !cursorSegmentState;
+      audioModePress = false;
+      cursorState = cursorSegmentState;
+      setSegment(cursorPosition,cursorSegmentState);
+      msgOutPrint();
+      cursorNextToggle = millis() + 1000;
+    }
+    
     for(int m = 0; m < MSG_OUT_COUNT; m++)
     {
       hold();
@@ -287,7 +345,11 @@ void loop() {
     digitalWrite(pinEnable, LOW);
     hold();
 
-    msgInPrint();
+    if (!audioModePress && (msgIn[2]&0x08))
+    {
+      audioModePress=true;
+      msgInPrint();
+    }
   }
 
   delay(50);
