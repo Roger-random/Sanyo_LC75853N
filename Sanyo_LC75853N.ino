@@ -40,6 +40,7 @@ uint8_t msgIn[MSG_IN_BYTES];
 uint8_t msgOut[MSG_OUT_COUNT][MSG_OUT_BYTES];
 
 // Bit patterns that toggle one of 16 groups of segments, arranged left to right.
+// Used for implementing a Larson scanner with the LCD
 uint8_t vertGroups[16][MSG_OUT_COUNT][MSG_OUT_BYTES] = {
   // AM DISC IN
   {
@@ -219,13 +220,17 @@ void setSegment(uint8_t segment, bool turnOn)
   segmentAccess(segment, false, turnOn);
 }
 
+// Queries state of the specified segment.
+// Note segment is zero-based counting and datasheet diagram starts at 1.
 bool getSegment(uint8_t segment)
 {
   return segmentAccess(segment, true, false);
 }
 
+// Common helper for getSegment and setSegment
 bool segmentAccess(uint8_t segment, bool getting, bool turnOn)
 {
+  // Calculate the bit that corresponds to the indicated segment.
   uint8_t message = 0;
   uint8_t index = 0;
   uint8_t segmentBit = 0;
@@ -235,8 +240,9 @@ bool segmentAccess(uint8_t segment, bool getting, bool turnOn)
   {
     Serial.print("Segment out of range ");
     Serial.println(segment);
-    return;
+    return false;
   }
+
   message = segment/SEG_PER_MSG;
   segmentBit = segment%SEG_PER_MSG;
   index = segmentBit/8;
@@ -318,12 +324,21 @@ uint8_t readByte()
 }
 
 
-// Etch-a-sketch mode
+// Drawing mode
 long cursorPosition;
 bool cursorState;
 bool cursorSegmentState;
 unsigned long cursorNextToggle;
 bool audioModePress;
+
+// Larson scanner mode
+uint8_t scannerState;
+int8_t scannerDirection;
+
+// Mode switch button
+bool powerPress;
+
+uint8_t currentMode;
 
 void setup() {
   pinMode(pinDataOut, OUTPUT);
@@ -350,6 +365,12 @@ void setup() {
   cursorNextToggle = millis();
   cursorState = true;
   audioModePress = false;
+
+  scannerState = 0;
+  scannerDirection = 1;
+
+  powerPress = false;
+  currentMode = 1;
 }
 
 void cursorSegmentUpdate()
@@ -365,38 +386,96 @@ void cursorSegmentUpdate()
   }
 }
 
-void loop() {
-
-  long newPos = audioModeEncoder.read();
-  if (newPos != audioModePosition)
+void copyGroup(uint8_t groupIndex)
+{
+  for(int m = 0; m < MSG_OUT_COUNT; m++)
   {
-    setSegment(cursorPosition,cursorSegmentState);
-    cursorPosition = newPos/2;
-    cursorSegmentState = getSegment(cursorPosition);
-
-    cursorState = true;
-    cursorSegmentUpdate();
-    
-    audioModePosition = newPos;
+    for (int i = 0; i < MSG_OUT_BYTES; i++)
+    {
+      msgOut[m][i] |= vertGroups[groupIndex][m][i];
+    }
   }
-  else if (cursorNextToggle < millis())
+}
+
+void loop() {
+  if (currentMode == 0)
   {
-    cursorState = !cursorState;
-    cursorSegmentUpdate();
+    // Drawing mode: see if the audio mode knob has been turned.
+    long newPos = audioModeEncoder.read();
+    if (newPos != audioModePosition)
+    {
+      // Knob moved. Leave old segment in the correct state and
+      // get the state of the new segment.
+      setSegment(cursorPosition,cursorSegmentState);
+      cursorPosition = newPos/2;
+      cursorSegmentState = getSegment(cursorPosition);
+
+      cursorState = true;
+      cursorSegmentUpdate();
+
+      audioModePosition = newPos;
+    }
+    else if (cursorNextToggle < millis())
+    {
+      // Knob was not moved, see if we need to blink our cursor.
+      cursorState = !cursorState;
+      cursorSegmentUpdate();
+    }
+  }
+  else if (currentMode == 1)
+  {
+    // Larson scanner mode: copy two out of 16 vertical groups.
+    msgOutReset();
+    copyGroup(scannerState);
+    copyGroup(scannerState+1);
+
+    if (scannerState==0 && scannerDirection==-1)
+    {
+      scannerDirection = 1;
+    }
+    else if (scannerState==14 && scannerDirection==1)
+    {
+      scannerDirection = -1;
+    }
+    else
+    {
+      scannerState += scannerDirection;
+    }
   }
 
   if (HIGH == digitalRead(pinDataIn))
   {
-    if (audioModePress)
+    if (powerPress)
     {
-      cursorSegmentState = !cursorSegmentState;
-      audioModePress = false;
-      cursorState = cursorSegmentState;
-      setSegment(cursorPosition,cursorSegmentState);
-      msgOutPrint();
-      cursorNextToggle = millis() + 1000;
+      // Switch mode
+      powerPress = false;
+      currentMode = currentMode+1;
+      if (currentMode >= 2)
+      {
+        currentMode = 0;
+      }
+      msgOutReset();
+      cursorSegmentState = getSegment(cursorPosition);
+      Serial.print("Mode ");
+      Serial.println(currentMode);
     }
-    
+
+    if (0 == currentMode)
+    {
+      // Drawing mode
+      if (audioModePress)
+      {
+        // Audio knob pressed, toggle current segment state.
+        cursorSegmentState = !cursorSegmentState;
+        audioModePress = false;
+        cursorState = cursorSegmentState;
+        setSegment(cursorPosition,cursorSegmentState);
+        msgOutPrint();
+        cursorNextToggle = millis() + 1000;
+      }
+    }
+
+    // Draw the current canvas.
     for(int m = 0; m < MSG_OUT_COUNT; m++)
     {
       hold();
@@ -413,6 +492,7 @@ void loop() {
   }
   else
   {
+    // Data In pin pulled low means there is key press data for us to read.
     hold();
     digitalWrite(pinEnable, LOW);
     writeByte(0x43); // Sanyo LC75853N CCB address to report keyscan data
@@ -424,7 +504,13 @@ void loop() {
     digitalWrite(pinEnable, LOW);
     hold();
 
-    if (!audioModePress && (msgIn[2]&0x08))
+    // See if it's a button we react to
+    if (!powerPress && (msgIn[3]&0x01))
+    {
+      powerPress = true;
+      msgInPrint();
+    }
+    else if (!audioModePress && (msgIn[2]&0x08))
     {
       audioModePress=true;
       msgInPrint();
